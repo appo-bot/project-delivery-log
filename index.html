@@ -213,6 +213,7 @@ function render(){
 const API_KEY = 'plog_4b3c9b5f_prod';
 
 async function openDetail(floor, room, meta){
+  // Encabezado del drawer
   els.dTitle.textContent = `Room ${room} — Floor ${floor}`;
   els.dSub.innerHTML = `
     <span class="pill">Type: ${meta.roomType || '-'}</span>
@@ -230,7 +231,7 @@ async function openDetail(floor, room, meta){
     const res = await fetch(url);
     const data = await res.json();
 
-    // Cargar usuarios
+    // Cargar usuarios para "Verified by"
     const users = await fetch(`${API_BASE}?action=users_list`).then(r=>r.json()).catch(()=>({users:[]}));
     const sel = document.getElementById('d-verifiedBy');
     sel.innerHTML = '<option value="">-- select --</option>';
@@ -241,58 +242,141 @@ async function openDetail(floor, room, meta){
       sel.appendChild(opt);
     });
 
-    // Render rows con inputs
+    // Render de filas con checkbox + spinner (cuando aplica)
     els.dRows.innerHTML = '';
     (data.rows || []).forEach(r=>{
       const st = r.qtyDelivered >= r.qtyRequired ? 'Complete'
               : r.qtyDelivered > 0 ? 'Partial'
               : 'Not delivered';
+
+      const isMulti = Number(r.qtyRequired) > 1;
+      const fullChecked = r.qtyDelivered >= r.qtyRequired; // si ya está completo
+      const partialVal  = fullChecked ? 0 : Math.max(0, Math.min(Number(r.qtyDelivered||0), Number(r.qtyRequired||0)));
+
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${r.itemCode}</td>
         <td>${r.qtyRequired}</td>
         <td>
-          <input type="number" min="0" value="${r.qtyDelivered}" data-item="${r.itemCode}" class="inp-qty" style="width:90px" />
-          ${r.isBedQueen || r.isBedKing ? `<div style="margin-top:6px;">
-            <input type="text" placeholder="BedNumbers (comma-separated)" data-bed="${r.itemCode}" style="width:100%" />
-          </div>` : ``}
+          <label style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="checkbox"
+                   class="chk-full"
+                   data-item="${r.itemCode}"
+                   data-req="${r.qtyRequired}"
+                   ${fullChecked ? 'checked' : ''}>
+            <span>Full</span>
+            ${isMulti ? `
+              <input type="number"
+                     class="inp-qty"
+                     data-item="${r.itemCode}"
+                     min="0"
+                     max="${r.qtyRequired}"
+                     step="1"
+                     value="${partialVal}"
+                     style="width:90px" ${fullChecked ? 'disabled' : ''} />
+              <span class="pill">Partial</span>
+            ` : ``}
+          </label>
+          ${(r.isBedQueen || r.isBedKing) ? `
+            <div style="margin-top:6px;">
+              <input type="text"
+                     placeholder="BedNumbers (comma-separated)"
+                     data-bed="${r.itemCode}"
+                     style="width:100%" />
+            </div>
+          ` : ``}
         </td>
         <td>${st}</td>
       `;
       els.dRows.appendChild(tr);
     });
 
+    // Mostrar Bed Numbers ya registrados (solo lectura)
     els.dBedQ.textContent = data.bedNumbers?.queen || '—';
     els.dBedK.textContent = data.bedNumbers?.king || '—';
+
+    // Wiring: checkbox ↔ spinner (habilitar/deshabilitar)
+    Array.from(document.querySelectorAll('.chk-full')).forEach(chk=>{
+      chk.addEventListener('change', ()=>{
+        const code = chk.getAttribute('data-item');
+        const req  = Number(chk.getAttribute('data-req') || 0);
+        const spin = document.querySelector(`.inp-qty[data-item="${CSS.escape(code)}"]`);
+        if (spin) {
+          if (chk.checked) {
+            // Full entrega → spinner a 0 y deshabilitado
+            spin.value = 0;
+            spin.disabled = true;
+          } else {
+            // Parcial → habilitar spinner
+            spin.disabled = false;
+            // mantener límites
+            const v = Number(spin.value || 0);
+            if (v > req) spin.value = req;
+            if (v < 0)   spin.value = 0;
+          }
+        }
+      });
+    });
 
     // Guardar
     const btn = document.getElementById('d-save');
     const msg = document.getElementById('d-msg');
     btn.onclick = async ()=>{
       msg.textContent = 'Saving...';
-      const inputs = Array.from(document.querySelectorAll('.inp-qty'));
-      const items = inputs.map(inp=>{
-        const code = inp.getAttribute('data-item');
-        const qty  = Number(inp.value || 0);
-        const bedInput = document.querySelector(`input[data-bed="${CSS.escape(code)}"]`);
-        const beds = bedInput ? bedInput.value.trim() : '';
-        return { itemCode: code, qtyDelivered: qty, bedNumbers: beds };
-      }).filter(x=> x.qtyDelivered > 0); // solo enviamos lo que tenga qty>0
+
+      // Construir payload desde checkbox/spinner
+      const items = [];
+      const chks = Array.from(document.querySelectorAll('.chk-full'));
+      chks.forEach(chk=>{
+        const code = chk.getAttribute('data-item');
+        const req  = Number(chk.getAttribute('data-req') || 0);
+        const spin = document.querySelector(`.inp-qty[data-item="${CSS.escape(code)}"]`);
+        const bedI = document.querySelector(`input[data-bed="${CSS.escape(code)}"]`);
+
+        let qty = 0;
+        if (chk.checked) {
+          qty = req; // Full
+        } else if (spin) {
+          qty = Number(spin.value || 0); // Parcial
+        } else {
+          qty = 0; // qtyRequired=1 desmarcado → 0
+        }
+
+        if (qty > 0) {
+          const obj = { itemCode: code, qtyDelivered: qty };
+          if (bedI) obj.bedNumbers = bedI.value.trim();
+          items.push(obj);
+        }
+      });
 
       const verifiedBy = document.getElementById('d-verifiedBy').value.trim();
       const notes = document.getElementById('d-notes').value.trim();
 
+      // Validación ligera en frontend para bases de cama (servidor también valida)
+      const bedCodes = new Set(['G-113','G-113A','G-114','G-114A']);
+      for (const it of items) {
+        if (bedCodes.has(it.itemCode)) {
+          const count = (it.bedNumbers || '').split(',').map(s=>s.trim()).filter(Boolean).length;
+          if (count !== Number(it.qtyDelivered || 0)) {
+            msg.textContent = 'Error';
+            alert(`BedNumbers must match qty for ${it.itemCode}`);
+            return;
+          }
+        }
+      }
+
       try {
+        // POST como x-www-form-urlencoded (evita preflight)
         const body = new URLSearchParams();
         body.append('apiKey', API_KEY);
         body.append('action', 'submit_delivery');
         body.append('payload', JSON.stringify({
-          // dateISO: '2025-10-22', // opcional
+          // dateISO: '2025-10-22', // opcional: si no lo mandas usa hoy
           floor: String(floor),
           room: String(room),
           verifiedBy,
-            notes,
-            items
+          notes,
+          items
         }));
 
         const resp = await fetch(API_BASE, {
@@ -303,13 +387,12 @@ async function openDetail(floor, room, meta){
 
         if (resp && resp.ok) {
           msg.textContent = 'Saved ✅';
-          // refrescar tablero
-          await load();
+          await load(); // refresca tablero
         } else {
           msg.textContent = 'Error';
           alert(resp.error || 'Error saving');
         }
-        } catch(err) {
+      } catch(err) {
         msg.textContent = 'Error';
         alert(err.message || String(err));
       }
@@ -319,6 +402,7 @@ async function openDetail(floor, room, meta){
     els.dRows.innerHTML = '<tr><td colspan="4">Error loading details</td></tr>';
   }
 }
+
 
 
 
