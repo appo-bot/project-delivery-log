@@ -283,22 +283,23 @@ async function openDetail(floor, room, meta){
       const notes = document.getElementById('d-notes').value.trim();
 
       try {
+        const body = new URLSearchParams();
+        body.append('apiKey', API_KEY);
+        body.append('action', 'submit_delivery');
+        body.append('payload', JSON.stringify({
+          // dateISO: '2025-10-22', // opcional
+          floor: String(floor),
+          room: String(room),
+          verifiedBy,
+            notes,
+            items
+        }));
+
         const resp = await fetch(API_BASE, {
           method: 'POST',
-          headers: { 'Content-Type':'application/json' },
-          body: JSON.stringify({
-            apiKey: API_KEY,
-            action: 'submit_delivery',
-            payload: {
-              // dateISO: '2025-10-22', // opcional; si lo omites usa hoy
-              floor: String(floor),
-              room: String(room),
-              verifiedBy,
-              notes,
-              items
-            }
-          })
-        }).then(r=>r.json());
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+          body
+        }).then(r => r.json());
 
         if (resp && resp.ok) {
           msg.textContent = 'Saved ✅';
@@ -308,7 +309,7 @@ async function openDetail(floor, room, meta){
           msg.textContent = 'Error';
           alert(resp.error || 'Error saving');
         }
-      } catch(err) {
+        } catch(err) {
         msg.textContent = 'Error';
         alert(err.message || String(err));
       }
