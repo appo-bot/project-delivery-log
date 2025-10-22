@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kanban Diagnostics</title>
+<style>
+  :root { --border:#e3e6ef; --muted:#666; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+  fieldset { border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:16px; }
+  legend { padding:0 6px; color:#222; font-weight:600; }
+  label { display:block; margin:8px 0 4px; }
+  input, select, button, textarea { font: inherit; }
+  input, select, textarea { width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; }
+  .row { display:grid; gap:12px; grid-template-columns: 1fr 1fr; }
+  .row3 { display:grid; gap:12px; grid-template-columns: 1fr 1fr 1fr; }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  button { padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; cursor:pointer; }
+  button.primary { background:#0b5cff; color:#fff; border-color:#0b5cff; }
+  .ok { color:#0a7a3e; font-weight:600; }
+  .err { color:#b00020; font-weight:600; }
+  .muted { color: var(--muted); }
+  pre { background:#fafbff; border:1px solid var(--border); border-radius:8px; padding:10px; overflow:auto; max-height:320px; }
+  .kpi { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:8px; }
+  .kpi div { background:#fafbff; border:1px solid var(--border); border-radius:8px; padding:8px; }
+</style>
+</head>
+<body>
+<h1>Kanban Diagnostics</h1>
+<p class="muted">Objetivo: verificar si el problema es del <strong>frontend</strong> (HTML/JS) o de la <strong>API Apps Script</strong> (URL, permisos, CORS, datos).</p>
+
+<fieldset>
+  <legend>1) Configuración</legend>
+  <label>API BASE (termina en <code>/exec</code>)</label>
+  <input id="apiBase" placeholder="https://script.google.com/macros/s/XXXX/exec" />
+  <div class="row">
+    <div>
+      <label>API KEY (para probar guardado)</label>
+      <input id="apiKey" placeholder="plog_xxx" />
+    </div>
+    <div>
+      <label>Force refresh</label>
+      <select id="forceSel">
+        <option value="false">false</option>
+        <option value="true">true</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label>Floor (para room_detail)</label>
+      <input id="floorIn" placeholder="8" />
+    </div>
+    <div>
+      <label>Room (para room_detail)</label>
+      <input id="roomIn" placeholder="801" />
+    </div>
+  </div>
+  <div class="btns">
+    <button class="primary" id="btnPing">Probar kanban_status</button>
+    <button id="btnRoom">Probar room_detail</button>
+    <button id="btnUsers">Probar users_list</button>
+    <button id="btnPost">Probar submit_delivery (dummy)</button>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>2) Resultado</legend>
+  <div class="kpi">
+    <div><div>Conexión</div><div id="kConn" class="muted">—</div></div>
+    <div><div>Contenido</div><div id="kJSON" class="muted">—</div></div>
+  </div>
+  <p class="muted" id="envInfo">—</p>
+  <h3>HTTP</h3>
+  <pre id="http"></pre>
+  <h3>JSON</h3>
+  <pre id="json"></pre>
+  <h3>Errores</h3>
+  <pre id="errors"></pre>
+</fieldset>
+
+<script>
+const els = {
+  apiBase: document.getElementById('apiBase'),
+  apiKey: document.getElementById('apiKey'),
+  force: document.getElementById('forceSel'),
+  floor: document.getElementById('floorIn'),
+  room: document.getElementById('roomIn'),
+  kConn: document.getElementById('kConn'),
+  kJSON: document.getElementById('kJSON'),
+  http: document.getElementById('http'),
+  json: document.getElementById('json'),
+  errors: document.getElementById('errors'),
+  envInfo: document.getElementById('envInfo'),
+  btnPing: document.getElementById('btnPing'),
+  btnRoom: document.getElementById('btnRoom'),
+  btnUsers: document.getElementById('btnUsers'),
+  btnPost: document.getElementById('btnPost'),
+};
+
+function resetPanels(){
+  els.kConn.textContent = '—';
+  els.kConn.className = 'muted';
+  els.kJSON.textContent = '—';
+  els.kJSON.className = 'muted';
+  els.http.textContent = '';
+  els.json.textContent = '';
+  els.errors.textContent = '';
+}
+
+function showEnv(){
+  const online = navigator.onLine ? 'online' : 'offline';
+  els.envInfo.textContent = `Estado navegador: ${online}. Origen: ${location.origin}.`;
+}
+showEnv();
+
+function urlWithParams(base, params){
+  const u = new URL(base);
+  Object.entries(params||{}).forEach(([k,v])=> u.searchParams.set(k, v));
+  return u.toString();
+}
+
+async function doFetch(desc, url, opt={}){
+  resetPanels();
+  const started = performance.now();
+  try{
+    const resp = await fetch(url, opt);
+    const ms = Math.round(performance.now() - started);
+    const headers = {};
+    resp.headers.forEach((v,k)=> headers[k] = v);
+    const txt = await resp.text();
+
+    els.http.textContent =
+`[${desc}] ${url}
+STATUS: ${resp.status} ${resp.statusText}  (${ms} ms)
+HEADERS: ${JSON.stringify(headers, null, 2)}
+BODY (text, primeras 1000 chars):
+${txt.slice(0,1000)}
+`;
+
+    if (!resp.ok) {
+      els.kConn.textContent = 'HTTP error';
+      els.kConn.className = 'err';
+      els.errors.textContent = `HTTP ${resp.status}: ${resp.statusText}\nRevisa permisos del Web App (Deploy > Anyone with the link).`;
+      return;
+    }
+
+    let json = null;
+    try { json = JSON.parse(txt); }
+    catch(parseErr){
+      els.kConn.textContent = 'OK (texto)';
+      els.kConn.className = 'ok';
+      els.kJSON.textContent = 'NO JSON';
+      els.kJSON.className = 'err';
+      els.errors.textContent = 'Respuesta no es JSON válido. Verifica que devuelves ContentService JSON.';
+      return;
+    }
+
+    els.kConn.textContent = 'OK';
+    els.kConn.className = 'ok';
+    els.kJSON.textContent = 'JSON OK';
+    els.kJSON.className = 'ok';
+    els.json.textContent = JSON.stringify(json, null, 2);
+
+  } catch(err){
+    els.kConn.textContent = 'Fallo de red/CORS';
+    els.kConn.className = 'err';
+    els.errors.textContent =
+`ERROR de fetch: ${err?.message || String(err)}
+
+Posibles causas:
+• URL mal escrita o sin /exec
+• Web App no desplegado (Deploy > New deployment > Web app)
+• Acceso no público (Who has access: Anyone)
+• Bloqueo CORS del lado Apps Script (poco común con ContentService JSON)
+• Cortafuegos o conexión offline`;
+  }
+}
+
+els.btnPing.onclick = async ()=>{
+  const base = (els.apiBase.value||'').trim();
+  if (!base) { alert('Ingresa API BASE'); return; }
+  const url = urlWithParams(base, { action:'kanban_status', force: els.force.value });
+  await doFetch('kanban_status', url);
+};
+
+els.btnRoom.onclick = async ()=>{
+  const base = (els.apiBase.value||'').trim();
+  if (!base) { alert('Ingresa API BASE'); return; }
+  const floor = (els.floor.value||'').trim();
+  const room  = (els.room.value||'').trim();
+  if (!floor || !room) { alert('Ingresa Floor y Room'); return; }
+  const url = urlWithParams(base, { action:'room_detail', floor, room, force: els.force.value });
+  await doFetch('room_detail', url);
+};
+
+els.btnUsers.onclick = async ()=>{
+  const base = (els.apiBase.value||'').trim();
+  if (!base) { alert('Ingresa API BASE'); return; }
+  const url = urlWithParams(base, { action:'users_list' });
+  await doFetch('users_list', url);
+};
+
+els.btnPost.onclick = async ()=>{
+  const base = (els.apiBase.value||'').trim();
+  const apiKey = (els.apiKey.value||'').trim();
+  const floor = (els.floor.value||'').trim() || '8';
+  const room  = (els.room.value||'').trim() || '801';
+  if (!base) { alert('Ingresa API BASE'); return; }
+  if (!apiKey) { alert('Ingresa API KEY'); return; }
+
+  resetPanels();
+  const payload = {
+    floor, room,
+    verifiedBy: '',
+    notes: 'diagnostic',
+    items: [] // vacío: solo valida auth y endpoint
+  };
+  const body = new URLSearchParams();
+  body.append('apiKey', apiKey);
+  body.append('action', 'submit_delivery');
+  body.append('payload', JSON.stringify(payload));
+
+  const started = performance.now();
+  try{
+    const resp = await fetch(base, {
+      method:'POST',
+      headers: { 'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8' },
+      body
+    });
+    const ms = Math.round(performance.now() - started);
+    const txt = await resp.text();
+
+    els.http.textContent =
+`[submit_delivery] ${base}
+STATUS: ${resp.status} ${resp.statusText}  (${ms} ms)
+BODY (text, primeras 1000 chars):
+${txt.slice(0,1000)}
+`;
+
+    if (!resp.ok) {
+      els.kConn.textContent = 'HTTP error';
+      els.kConn.className = 'err';
+      els.errors.textContent = `HTTP ${resp.status}: ${resp.statusText}`;
+      return;
+    }
+
+    let json=null;
+    try { json = JSON.parse(txt); } catch(_) {}
+    if (json) {
+      els.kConn.textContent = 'OK';
+      els.kConn.className = 'ok';
+      els.kJSON.textContent = 'JSON OK';
+      els.kJSON.className = 'ok';
+      els.json.textContent = JSON.stringify(json, null, 2);
+    } else {
+      els.kConn.textContent = 'OK (texto)';
+      els.kConn.className = 'ok';
+      els.kJSON.textContent = 'NO JSON';
+      els.kJSON.className = 'err';
+    }
+  } catch(err){
+    els.kConn.textContent = 'Fallo de red/CORS';
+    els.kConn.className = 'err';
+    els.errors.textContent = `ERROR de fetch: ${err?.message || String(err)}`;
+  }
+};
+</script>
+</body>
+</html>
