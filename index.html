@@ -92,6 +92,21 @@
       </thead>
       <tbody id="d-rows"></tbody>
     </table>
+
+        <h4 style="margin-top:12px;">Verification</h4>
+    <div class="meta">
+      <span><strong>Verified by:</strong></span>
+      <select id="d-verifiedBy"></select>
+    </div>
+
+    <h4 style="margin-top:12px;">Notes</h4>
+    <textarea id="d-notes" rows="3" style="width:100%;border:1px solid #e3e6ef;border-radius:8px;padding:8px;"></textarea>
+
+    <div style="margin-top:12px; display:flex; gap:8px;">
+      <button id="d-save">Save delivery</button>
+      <span id="d-msg" class="pill"></span>
+    </div>
+
     <h4 style="margin-top:12px;">Bed Numbers</h4>
     <div class="meta">
       <span><strong>Queen:</strong> <span id="d-bedQ">—</span></span>
@@ -191,6 +206,12 @@ function render(){
   els.counts.par.textContent = cPar;
   els.counts.com.textContent = cCom;
 }
+
+
+
+// ⬇️ Coloca tu API KEY igual a la que guardaste en Script Properties
+const API_KEY = 'plog_4b3c9b5f_prod';
+
 async function openDetail(floor, room, meta){
   els.dTitle.textContent = `Room ${room} — Floor ${floor}`;
   els.dSub.innerHTML = `
@@ -199,23 +220,43 @@ async function openDetail(floor, room, meta){
     <span class="pill">Status: ${meta.status}</span>
   `;
   els.dRows.innerHTML = '<tr><td colspan="4">Loading…</td></tr>';
+  els.dBedQ.textContent = '—';
+  els.dBedK.textContent = '—';
   els.drawer.classList.add('open');
 
   try {
+    // Detalle del cuarto
     const url = `${API_BASE}?action=room_detail&floor=${encodeURIComponent(floor)}&room=${encodeURIComponent(room)}`;
     const res = await fetch(url);
     const data = await res.json();
 
+    // Cargar usuarios
+    const users = await fetch(`${API_BASE}?action=users_list`).then(r=>r.json()).catch(()=>({users:[]}));
+    const sel = document.getElementById('d-verifiedBy');
+    sel.innerHTML = '<option value="">-- select --</option>';
+    (users.users || []).forEach(u=>{
+      const opt = document.createElement('option');
+      opt.value = u;
+      opt.textContent = u;
+      sel.appendChild(opt);
+    });
+
+    // Render rows con inputs
     els.dRows.innerHTML = '';
     (data.rows || []).forEach(r=>{
-      const st = r.qtyDelivered >= r.qtyRequired ? '✓ Complete'
+      const st = r.qtyDelivered >= r.qtyRequired ? 'Complete'
               : r.qtyDelivered > 0 ? 'Partial'
               : 'Not delivered';
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${r.itemCode}</td>
         <td>${r.qtyRequired}</td>
-        <td>${r.qtyDelivered}</td>
+        <td>
+          <input type="number" min="0" value="${r.qtyDelivered}" data-item="${r.itemCode}" class="inp-qty" style="width:90px" />
+          ${r.isBedQueen || r.isBedKing ? `<div style="margin-top:6px;">
+            <input type="text" placeholder="BedNumbers (comma-separated)" data-bed="${r.itemCode}" style="width:100%" />
+          </div>` : ``}
+        </td>
         <td>${st}</td>
       `;
       els.dRows.appendChild(tr);
@@ -223,10 +264,67 @@ async function openDetail(floor, room, meta){
 
     els.dBedQ.textContent = data.bedNumbers?.queen || '—';
     els.dBedK.textContent = data.bedNumbers?.king || '—';
+
+    // Guardar
+    const btn = document.getElementById('d-save');
+    const msg = document.getElementById('d-msg');
+    btn.onclick = async ()=>{
+      msg.textContent = 'Saving...';
+      const inputs = Array.from(document.querySelectorAll('.inp-qty'));
+      const items = inputs.map(inp=>{
+        const code = inp.getAttribute('data-item');
+        const qty  = Number(inp.value || 0);
+        const bedInput = document.querySelector(`input[data-bed="${CSS.escape(code)}"]`);
+        const beds = bedInput ? bedInput.value.trim() : '';
+        return { itemCode: code, qtyDelivered: qty, bedNumbers: beds };
+      }).filter(x=> x.qtyDelivered > 0); // solo enviamos lo que tenga qty>0
+
+      const verifiedBy = document.getElementById('d-verifiedBy').value.trim();
+      const notes = document.getElementById('d-notes').value.trim();
+
+      try {
+        const resp = await fetch(API_BASE, {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({
+            apiKey: API_KEY,
+            action: 'submit_delivery',
+            payload: {
+              // dateISO: '2025-10-22', // opcional; si lo omites usa hoy
+              floor: String(floor),
+              room: String(room),
+              verifiedBy,
+              notes,
+              items
+            }
+          })
+        }).then(r=>r.json());
+
+        if (resp && resp.ok) {
+          msg.textContent = 'Saved ✅';
+          // refrescar tablero
+          await load();
+        } else {
+          msg.textContent = 'Error';
+          alert(resp.error || 'Error saving');
+        }
+      } catch(err) {
+        msg.textContent = 'Error';
+        alert(err.message || String(err));
+      }
+    };
+
   } catch (e) {
     els.dRows.innerHTML = '<tr><td colspan="4">Error loading details</td></tr>';
   }
 }
+</script>
+
+
+
+
+
+
 els.closeBtn.addEventListener('click', ()=> els.drawer.classList.remove('open'));
 els.floorSel.addEventListener('change', render);
 els.roomFilter.addEventListener('input', render);
