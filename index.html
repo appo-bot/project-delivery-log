@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Project Delivery Log — Kanban</title>
+<style>
+  :root { --gap: 12px; --card: #fff; --bg: #f6f7fb; --text:#222; --muted:#777; --border:#e3e6ef; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
+  header { position: sticky; top:0; background:#fff; border-bottom:1px solid var(--border); padding:10px 12px; z-index:10; }
+  .toolbar { display:flex; gap:var(--gap); align-items:center; flex-wrap:wrap; max-width:1200px; margin:0 auto; }
+  select, input { padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:#fff; }
+  .page { max-width:1200px; margin:16px auto; padding:0 12px; }
+  .cols { display:grid; grid-template-columns: repeat(3, 1fr); gap:var(--gap); }
+  @media (max-width: 980px){ .cols { grid-template-columns: 1fr; } }
+  .col { background:#fff; border:1px solid var(--border); border-radius:12px; padding:8px; }
+  .col h3 { margin:6px 8px 10px; font-size:16px; }
+  .count { color:var(--muted); font-weight:400; margin-left:6px; }
+  .list { display:flex; flex-direction:column; gap:8px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; cursor:pointer; transition: box-shadow .2s ease; }
+  .card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  .badge { font-size:12px; padding:3px 8px; border-radius:999px; background:#eef0f6; color:#445; border:1px solid var(--border); }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .meta { color:var(--muted); font-size:12px; margin-top:4px; display:flex; gap:12px; flex-wrap:wrap; }
+  /* Drawer */
+  .drawer { position: fixed; right:-520px; top:0; width:520px; max-width:100%; height:100%; background:#fff; border-left:1px solid var(--border); box-shadow: -8px 0 20px rgba(0,0,0,.05); transition:right .25s ease; z-index:100; display:flex; flex-direction:column; }
+  .drawer.open { right:0; }
+  .drawer header { padding:12px; border-bottom:1px solid var(--border); }
+  .drawer .body { padding:12px; overflow:auto; }
+  table { width:100%; border-collapse: collapse; margin-top:8px; }
+  th, td { border-bottom:1px solid var(--border); padding:6px 8px; font-size:14px; text-align:left; }
+  th { background:#fafbff; position:sticky; top:0; z-index:5; }
+  .pill { display:inline-block; padding:2px 6px; border-radius:6px; background:#f1f3f9; font-size:12px; color:#555; border:1px solid var(--border); }
+  .footer { padding:10px 12px; border-top:1px solid var(--border); color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="toolbar">
+    <strong>Kanban — Delivery Status</strong>
+    <label>Floor:
+      <select id="floorSel">
+        <option value="">All floors</option>
+      </select>
+    </label>
+    <label>Room:
+      <input id="roomFilter" placeholder="e.g. 801" />
+    </label>
+    <span id="stamp" class="pill"></span>
+  </div>
+</header>
+
+<div class="page">
+  <div class="cols" id="cols">
+    <div class="col" data-col="Not Delivered">
+      <h3>Not Delivered <span class="count" id="c-not">0</span></h3>
+      <div class="list" id="list-not"></div>
+    </div>
+    <div class="col" data-col="Partial">
+      <h3>Partial <span class="count" id="c-par">0</span></h3>
+      <div class="list" id="list-par"></div>
+    </div>
+    <div class="col" data-col="Complete">
+      <h3>Complete <span class="count" id="c-com">0</span></h3>
+      <div class="list" id="list-com"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Drawer detalle -->
+<aside class="drawer" id="drawer">
+  <header>
+    <div class="row">
+      <div>
+        <div id="d-title" style="font-weight:600"></div>
+        <div id="d-sub" class="meta"></div>
+      </div>
+      <button id="d-close">Close</button>
+    </div>
+  </header>
+  <div class="body">
+    <h4>Item checklist (read-only)</h4>
+    <table>
+      <thead>
+        <tr>
+          <th>ItemCode</th>
+          <th>Required</th>
+          <th>Delivered</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="d-rows"></tbody>
+    </table>
+    <h4 style="margin-top:12px;">Bed Numbers</h4>
+    <div class="meta">
+      <span><strong>Queen:</strong> <span id="d-bedQ">—</span></span>
+      <span><strong>King:</strong> <span id="d-bedK">—</span></span>
+    </div>
+  </div>
+  <div class="footer">
+    Read-only preview. Source of truth: Google Sheets.
+  </div>
+</aside>
+
+<script>
+const API_BASE = 'https://script.google.com/macros/s/AKfycbzuJK9yrVHtURxhYlqP71qOg-2doYsoL8ry38Gus162VClilEdlQ_qgT7ud_wW3pJrX/exec'; // ← Pega aquí tu URL del deployment (termina en /exec)
+
+let RAW = { items: [], floors: [] };
+
+const els = {
+  floorSel: document.getElementById('floorSel'),
+  roomFilter: document.getElementById('roomFilter'),
+  stamp: document.getElementById('stamp'),
+  lists: {
+    not: document.getElementById('list-not'),
+    par: document.getElementById('list-par'),
+    com: document.getElementById('list-com'),
+  },
+  counts: {
+    not: document.getElementById('c-not'),
+    par: document.getElementById('c-par'),
+    com: document.getElementById('c-com'),
+  },
+  drawer: document.getElementById('drawer'),
+  dTitle: document.getElementById('d-title'),
+  dSub: document.getElementById('d-sub'),
+  dRows: document.getElementById('d-rows'),
+  dBedQ: document.getElementById('d-bedQ'),
+  dBedK: document.getElementById('d-bedK'),
+  closeBtn: document.getElementById('d-close'),
+};
+
+async function load() {
+  const url = `${API_BASE}?action=kanban_status`;
+  const res = await fetch(url, { method:'GET' });
+  const data = await res.json();
+  RAW = data;
+  // Filtros
+  fillFloors(data.floors || []);
+  els.stamp.textContent = data.generatedAt ? new Date(data.generatedAt).toLocaleString() : '';
+  render();
+}
+function fillFloors(floors){
+  floors.forEach(f=>{
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = `Floor ${f}`;
+    els.floorSel.appendChild(opt);
+  });
+}
+function render(){
+  const floor = els.floorSel.value.trim();
+  const roomq = els.roomFilter.value.trim().toLowerCase();
+
+  const filtered = RAW.items.filter(it=>{
+    const okF = !floor || String(it.floor) === floor;
+    const okR = !roomq || String(it.room).toLowerCase().includes(roomq);
+    return okF && okR;
+  });
+
+  // Vaciar
+  els.lists.not.innerHTML = '';
+  els.lists.par.innerHTML = '';
+  els.lists.com.innerHTML = '';
+
+  let cNot=0, cPar=0, cCom=0;
+
+  filtered.forEach(it=>{
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="row">
+        <div><strong>Floor ${it.floor}</strong> — Room <strong>${it.room}</strong></div>
+        <span class="badge">${it.status}</span>
+      </div>
+      <div class="meta">
+        <span>Type: ${it.roomType || '-'}</span>
+        <span>ADA: ${it.ada || '-'}</span>
+        <span>Delivered: ${it.delivered}/${it.required}</span>
+        <span>Last: ${it.lastDeliveryDate || '-'}</span>
+      </div>
+    `;
+    card.addEventListener('click', ()=>openDetail(it.floor, it.room, it));
+    if (it.status === 'Complete') { els.lists.com.appendChild(card); cCom++; }
+    else if (it.status === 'Partial') { els.lists.par.appendChild(card); cPar++; }
+    else { els.lists.not.appendChild(card); cNot++; }
+  });
+
+  els.counts.not.textContent = cNot;
+  els.counts.par.textContent = cPar;
+  els.counts.com.textContent = cCom;
+}
+async function openDetail(floor, room, meta){
+  els.dTitle.textContent = `Room ${room} — Floor ${floor}`;
+  els.dSub.innerHTML = `
+    <span class="pill">Type: ${meta.roomType || '-'}</span>
+    <span class="pill">ADA: ${meta.ada || '-'}</span>
+    <span class="pill">Status: ${meta.status}</span>
+  `;
+  els.dRows.innerHTML = '<tr><td colspan="4">Loading…</td></tr>';
+  els.drawer.classList.add('open');
+
+  try {
+    const url = `${API_BASE}?action=room_detail&floor=${encodeURIComponent(floor)}&room=${encodeURIComponent(room)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    els.dRows.innerHTML = '';
+    (data.rows || []).forEach(r=>{
+      const st = r.qtyDelivered >= r.qtyRequired ? '✓ Complete'
+              : r.qtyDelivered > 0 ? 'Partial'
+              : 'Not delivered';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r.itemCode}</td>
+        <td>${r.qtyRequired}</td>
+        <td>${r.qtyDelivered}</td>
+        <td>${st}</td>
+      `;
+      els.dRows.appendChild(tr);
+    });
+
+    els.dBedQ.textContent = data.bedNumbers?.queen || '—';
+    els.dBedK.textContent = data.bedNumbers?.king || '—';
+  } catch (e) {
+    els.dRows.innerHTML = '<tr><td colspan="4">Error loading details</td></tr>';
+  }
+}
+els.closeBtn.addEventListener('click', ()=> els.drawer.classList.remove('open'));
+els.floorSel.addEventListener('change', render);
+els.roomFilter.addEventListener('input', render);
+
+load();
+</script>
+</body>
+</html>
