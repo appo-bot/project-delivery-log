@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Project Delivery Log — Kanban (Optimized)</title>
+<title>Project Delivery Log — Kanban (Optimized Editable)</title>
 <style>
   :root { --gap: 12px; --card: #fff; --bg: #f6f7fb; --text:#222; --muted:#777; --border:#e3e6ef; }
   * { box-sizing: border-box; }
@@ -68,7 +68,7 @@
   </div>
 </div>
 
-<!-- Drawer detalle -->
+<!-- Drawer detalle editable -->
 <aside class="drawer" id="drawer">
   <header>
     <div class="row">
@@ -79,10 +79,42 @@
       <button id="d-close">Close</button>
     </div>
   </header>
-  <div class="body" id="drawerBody"></div>
-  <div class="footer">
-    Read-only preview. Source of truth: Google Sheets.
+
+  <div class="body">
+    <h4>Item checklist</h4>
+    <table>
+      <thead>
+        <tr>
+          <th>ItemCode</th>
+          <th>Required</th>
+          <th>Delivered</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="d-rows"></tbody>
+    </table>
+
+    <h4 style="margin-top:12px;">Verification</h4>
+    <div class="meta">
+      <span><strong>Verified by:</strong></span>
+      <select id="d-verifiedBy"></select>
+    </div>
+
+    <h4 style="margin-top:12px;">Notes</h4>
+    <textarea id="d-notes" rows="3" style="width:100%;border:1px solid #e3e6ef;border-radius:8px;padding:8px;"></textarea>
+
+    <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+      <button id="d-save">Save delivery</button>
+      <span id="d-msg" class="pill"></span>
+    </div>
+
+    <h4 style="margin-top:12px;">Bed Numbers</h4>
+    <div class="meta">
+      <span><strong>Queen:</strong> <span id="d-bedQ">—</span></span>
+      <span><strong>King:</strong> <span id="d-bedK">—</span></span>
+    </div>
   </div>
+  <div class="footer">Source of truth: Google Sheets.</div>
 </aside>
 
 <script>
@@ -108,17 +140,12 @@ const els = {
     com: document.getElementById('c-com'),
   },
   drawer: document.getElementById('drawer'),
-  drawerBody: document.getElementById('drawerBody'),
   closeBtn: document.getElementById('d-close')
 };
 
-// 🔹 Cargar estado general (Kanban)
+// === Load board ===
 async function load() {
-  if (cacheStatus) {
-    RAW = cacheStatus;
-    render();
-    return;
-  }
+  if (cacheStatus) { RAW = cacheStatus; render(); return; }
   const url = `${API_BASE}?action=kanban_status`;
   const res = await fetch(url);
   const data = await res.json();
@@ -129,24 +156,25 @@ async function load() {
   render();
 }
 
-// 🔹 Llenar menú de pisos
+// === Fill floor dropdown ===
 function fillFloors(floors){
+  els.floorSel.innerHTML = '<option value="">All floors</option>';
   floors.forEach(f=>{
-    const opt = document.createElement('option');
-    opt.value = f;
-    opt.textContent = `Floor ${f}`;
+    const opt=document.createElement('option');
+    opt.value=f;
+    opt.textContent=`Floor ${f}`;
     els.floorSel.appendChild(opt);
   });
 }
 
-// 🔹 Render del tablero principal
+// === Render Kanban columns ===
 function render(){
-  const floor = els.floorSel.value.trim();
-  const roomq = els.roomFilter.value.trim().toLowerCase();
-  const filtered = RAW.items.filter(it=>{
-    const okF = !floor || String(it.floor) === floor;
-    const okR = !roomq || String(it.room).toLowerCase().includes(roomq);
-    return okF && okR;
+  const floor=els.floorSel.value.trim();
+  const roomq=els.roomFilter.value.trim().toLowerCase();
+  const filtered=RAW.items.filter(it=>{
+    const okF=!floor||String(it.floor)===floor;
+    const okR=!roomq||String(it.room).toLowerCase().includes(roomq);
+    return okF&&okR;
   });
   ['not','par','com'].forEach(k=>els.lists[k].innerHTML='');
   let cNot=0,cPar=0,cCom=0;
@@ -173,47 +201,133 @@ function render(){
   els.counts.com.textContent=cCom;
 }
 
-// 🔹 Abrir detalle del cuarto (usa caché)
-async function openDetail(floor,room,meta){
-  els.drawerBody.innerHTML='<p>Loading room data...</p>';
+// === Drawer editable ===
+async function openDetail(floor, room, meta){
+  document.getElementById('d-title').textContent = `Room ${room} — Floor ${floor}`;
+  document.getElementById('d-sub').innerHTML = `
+    <span class="pill">Type: ${meta.roomType || '-'}</span>
+    <span class="pill">ADA: ${meta.ada || '-'}</span>
+    <span class="pill">Status: ${meta.status}</span>`;
+  document.getElementById('d-rows').innerHTML = '<tr><td colspan="4">Loading…</td></tr>';
+  document.getElementById('d-bedQ').textContent='—';
+  document.getElementById('d-bedK').textContent='—';
   els.drawer.classList.add('open');
 
-  if (cacheRooms[`${floor}-${room}`]) {
-    renderDetail(cacheRooms[`${floor}-${room}`], floor, room, meta);
-    return;
-  }
+  // Users
+  try {
+    const users=await fetch(`${API_BASE}?action=users_list`).then(r=>r.json());
+    const sel=document.getElementById('d-verifiedBy');
+    sel.innerHTML='<option value="">-- select --</option>';
+    (users.users||[]).forEach(u=>{
+      const opt=document.createElement('option');
+      opt.value=u; opt.textContent=u; sel.appendChild(opt);
+    });
+  }catch(_){document.getElementById('d-verifiedBy').innerHTML='<option value="">-- select --</option>'; }
 
-  try{
+  // Room detail
+  const cacheKey=`${floor}-${room}`;
+  let data;
+  if(cacheRooms[cacheKey]) data=cacheRooms[cacheKey];
+  else {
     const url=`${API_BASE}?action=room_detail&floor=${encodeURIComponent(floor)}&room=${encodeURIComponent(room)}`;
-    const res=await fetch(url);
-    const data=await res.json();
-    cacheRooms[`${floor}-${room}`]=data;
-    renderDetail(data,floor,room,meta);
-  }catch(e){
-    els.drawerBody.innerHTML='<p style="color:red;">Error loading details</p>';
+    data=await fetch(url).then(r=>r.json());
+    cacheRooms[cacheKey]=data;
   }
+  renderRoomDetailEditable(data,floor,room,meta);
 }
 
-// 🔹 Render del detalle
-function renderDetail(data,floor,room,meta){
-  els.drawerBody.innerHTML=`
-    <h4>Room ${room} — Floor ${floor}</h4>
-    <p class="meta">Type: ${meta.roomType||'-'} | ADA: ${meta.ada||'-'} | Status: ${meta.status}</p>
-    <table>
-      <thead><tr><th>Item</th><th>Required</th><th>Delivered</th><th>Status</th></tr></thead>
-      <tbody>${(data.rows||[]).map(r=>{
-        const st=r.qtyDelivered>=r.qtyRequired?'Complete':r.qtyDelivered>0?'Partial':'Not delivered';
-        return `<tr><td>${r.itemCode}</td><td>${r.qtyRequired}</td><td>${r.qtyDelivered}</td><td>${st}</td></tr>`;
-      }).join('')}</tbody>
-    </table>
-    <p><strong>Queen:</strong> ${data.bedNumbers?.queen||'—'} | <strong>King:</strong> ${data.bedNumbers?.king||'—'}</p>
-  `;
+function renderRoomDetailEditable(data,floor,room,meta){
+  const tbody=document.getElementById('d-rows');
+  tbody.innerHTML='';
+  (data.rows||[]).forEach(r=>{
+    const st=r.qtyDelivered>=r.qtyRequired?'Complete':r.qtyDelivered>0?'Partial':'Not delivered';
+    const isMulti=Number(r.qtyRequired)>1;
+    const fullChecked=r.qtyDelivered>=r.qtyRequired;
+    const partialVal=fullChecked?0:Math.max(0,Math.min(Number(r.qtyDelivered||0),Number(r.qtyRequired||0)));
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td>${r.itemCode}</td>
+      <td>${r.qtyRequired}</td>
+      <td>
+        <label style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input type="checkbox" class="chk-full" data-item="${r.itemCode}" data-req="${r.qtyRequired}" ${fullChecked?'checked':''}>
+          <span>Full</span>
+          ${isMulti?`
+            <input type="number" class="inp-qty" data-item="${r.itemCode}" min="0" max="${r.qtyRequired}" step="1" value="${partialVal}" style="width:90px" ${fullChecked?'disabled':''}/>
+            <span class="pill">Partial</span>`:''}
+        </label>
+        ${(r.isBedQueen||r.isBedKing)?`
+          <div style="margin-top:6px;">
+            <input type="text" placeholder="BedNumbers (comma-separated)" data-bed="${r.itemCode}" style="width:100%"/>
+          </div>`:''}
+      </td>
+      <td>${st}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('d-bedQ').textContent=data.bedNumbers?.queen||'—';
+  document.getElementById('d-bedK').textContent=data.bedNumbers?.king||'—';
+
+  Array.from(document.querySelectorAll('.chk-full')).forEach(chk=>{
+    chk.addEventListener('change',()=>{
+      const code=chk.getAttribute('data-item');
+      const req=Number(chk.getAttribute('data-req')||0);
+      const spin=document.querySelector(`.inp-qty[data-item="${CSS.escape(code)}"]`);
+      if(spin){
+        if(chk.checked){spin.value=0;spin.disabled=true;}
+        else{spin.disabled=false;const v=Number(spin.value||0);if(v>req)spin.value=req;if(v<0)spin.value=0;}
+      }
+    });
+  });
+
+  const btn=document.getElementById('d-save');
+  const msg=document.getElementById('d-msg');
+  btn.onclick=async()=>{
+    msg.textContent='Saving...';
+    const items=[];
+    const chks=Array.from(document.querySelectorAll('.chk-full'));
+    chks.forEach(chk=>{
+      const code=chk.getAttribute('data-item');
+      const req=Number(chk.getAttribute('data-req')||0);
+      const spin=document.querySelector(`.inp-qty[data-item="${CSS.escape(code)}"]`);
+      const bedI=document.querySelector(`input[data-bed="${CSS.escape(code)}"]`);
+      let qty=0;
+      if(chk.checked)qty=req; else if(spin)qty=Number(spin.value||0);
+      if(qty>0){
+        const obj={itemCode:code,qtyDelivered:qty};
+        if(bedI)obj.bedNumbers=bedI.value.trim();
+        items.push(obj);
+      }
+    });
+
+    const verifiedBy=document.getElementById('d-verifiedBy').value.trim();
+    const notes=document.getElementById('d-notes').value.trim();
+    const bedCodes=new Set(['G-113','G-113A','G-114','G-114A']);
+    for(const it of items){
+      if(bedCodes.has(it.itemCode)){
+        const count=(it.bedNumbers||'').split(',').map(s=>s.trim()).filter(Boolean).length;
+        if(count!==Number(it.qtyDelivered||0)){msg.textContent='Error';alert(`BedNumbers must match qty for ${it.itemCode}`);return;}
+      }
+    }
+
+    try{
+      const body=new URLSearchParams();
+      body.append('apiKey',API_KEY);
+      body.append('action','submit_delivery');
+      body.append('payload',JSON.stringify({floor:String(floor),room:String(room),verifiedBy,notes,items}));
+      const resp=await fetch(API_BASE,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body}).then(r=>r.json());
+      if(resp&&resp.ok){
+        msg.textContent='Saved ✅';
+        cacheRooms[`${floor}-${room}`]=null; cacheStatus=null;
+        await load();
+        openDetail(floor,room,(RAW.items||[]).find(it=>String(it.floor)===String(floor)&&String(it.room)===String(room))||meta);
+      }else{msg.textContent='Error';alert(resp.error||'Error saving');}
+    }catch(err){msg.textContent='Error';alert(err.message||String(err));}
+  };
 }
 
-els.closeBtn.onclick=()=>els.drawer.classList.remove('open');
-els.floorSel.onchange=render;
-els.roomFilter.oninput=render;
-
+els.closeBtn.addEventListener('click',()=>els.drawer.classList.remove('open'));
+els.floorSel.addEventListener('change',render);
+els.roomFilter.addEventListener('input',render);
 load();
 </script>
 </body>
